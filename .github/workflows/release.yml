@@ -1,0 +1,47 @@
+name: Release
+
+# 推送 v* 格式的 tag 时自动构建并发布 Release（附双架构 app 安装包）
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build universal app (x86_64 + arm64)
+        run: |
+          APP="StayAwake.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp Info.plist "$APP/Contents/Info.plist"
+          swiftc -swift-version 5 -O -target x86_64-apple-macos12.0 -o "$APP/Contents/MacOS/StayAwake" main.swift
+          swiftc -swift-version 5 -O -target arm64-apple-macos12.0 -o "$APP/Contents/MacOS/StayAwake.arm64" main.swift
+          lipo -create "$APP/Contents/MacOS/StayAwake" "$APP/Contents/MacOS/StayAwake.arm64" -output "$APP/Contents/MacOS/StayAwake"
+          rm "$APP/Contents/MacOS/StayAwake.arm64"
+          # 未签名的应用部分系统接口会静默失败，ad-hoc 签名这步不能省
+          codesign --force --sign - "$APP"
+          lipo -info "$APP/Contents/MacOS/StayAwake"
+
+      - name: Package
+        run: |
+          # 清掉扩展属性，避免 zip 里出现 __MACOSX 垃圾目录
+          xattr -cr StayAwake.app
+          VERSION="${GITHUB_REF_NAME#v}"
+          ditto -c -k --keepParent StayAwake.app "StayAwake-${VERSION}.zip"
+          unzip -l "StayAwake-${VERSION}.zip"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ZIP="StayAwake-${GITHUB_REF_NAME#v}.zip"
+          gh release create "$GITHUB_REF_NAME" "$ZIP" --title "$GITHUB_REF_NAME" --generate-notes \
+            || gh release upload "$GITHUB_REF_NAME" "$ZIP" --clobber
+          gh release view "$GITHUB_REF_NAME"
